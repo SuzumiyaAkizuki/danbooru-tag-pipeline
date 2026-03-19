@@ -1,0 +1,25 @@
+paths:
+  raw:
+    sqlite_db: "data/raw/tag.sqlite"
+    cooc_raw_csv: "data/raw/cooccurrence_matrix.csv"
+
+  checkpoint:
+    llm_history: "data/checkpoint/llm_history.json"
+    llm_temp: "data/checkpoint/llm_temp.jsonl"
+    wiki_progress: "data/checkpoint/wiki_progress.txt"
+    cooc_progress: "data/checkpoint/cooc_progress.txt"
+
+  processed:
+    tags_enhanced: "data/processed/tags_enhanced.csv"
+    wiki_parquet: "data/processed/wiki_pages.parquet"
+    cooc_clean: "data/processed/cooccurrence_clean.parquet"
+
+
+settings:
+  llm:
+    model_name: "x-ai/grok-4.1-fast"
+    batch_size: 10
+
+  cooc_trim:
+    top_k: 50
+    min_pmi: 1.0
