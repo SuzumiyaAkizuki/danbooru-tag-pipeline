@@ -74,6 +74,8 @@ BANGUMI_TOKEN=your_bangumi_token
 
 ## 目录结构
 
+可以在[此链接](https://pan.quark.cn/s/1e7371a136a7)下载我目前使用的`data/` 数据文件夹。内含目前我正在使用的最新全套数据文件。
+
 ```
 project_root/
 ├── main.py                  # CLI 入口
@@ -227,6 +229,8 @@ settings:
 ### Step 4 — `fetch_cooc.py`
 
 **功能**：遍历目标标签，通过 Danbooru 的 `related_tag` API 抓取两两共现关系，构建原始共现矩阵。支持**增量模式**（默认）和**全量更新模式**（`--full`）。
+
+**警告**：全量更新模式耗时极长，约需24小时。
 
 #### 两种运行模式
 

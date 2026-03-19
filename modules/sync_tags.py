@@ -35,7 +35,6 @@ def run(config):
 
     try:
         conn = sqlite3.connect(sqlite_path)
-        # 🌟 修改 1: 在 SELECT 查询中把 cn_name 查出来
         df_sqlite = pd.read_sql_query("SELECT name, category, cn_name, post_count FROM tags", conn)
         conn.close()
     except Exception as e:
@@ -45,33 +44,31 @@ def run(config):
     # 格式化 SQLite 数据
     df_sqlite['post_count'] = pd.to_numeric(df_sqlite['post_count'], errors='coerce').fillna(0).astype(int)
     df_sqlite['category'] = pd.to_numeric(df_sqlite['category'], errors='coerce').fillna(-1).astype(int)
-    # 🌟 修改 2: 确保 cn_name 是干净的字符串，并处理缺失值
     df_sqlite['cn_name'] = df_sqlite['cn_name'].fillna("").astype(str)
 
-    # 1. 提取新增标签
+    # 提取新增标签
     mask_new = (df_sqlite['post_count'] >= 100) & (df_sqlite['category'].isin([0, 3, 4])) & (
         ~df_sqlite['name'].isin(existing_names))
     df_new = df_sqlite[mask_new].copy()
 
     if not df_new.empty:
-        # 🌟 修改 3: 删除了 df_new['cn_name'] = ""，保留 SQLite 带过来的原始中文名
         df_new['wiki'] = ""
         df_new['nsfw'] = "0"
         click.secho(f"[Sync Tags] 发现 {len(df_new)} 个符合条件的新增标签！", fg="green")
     else:
         click.secho("[Sync Tags] 没有发现符合条件的新增标签。", fg="yellow")
 
-    # 2. 合并并更新所有标签的分类和发帖量
+    # 合并并更新所有标签的分类和发帖量
     df_all = pd.concat([df_old, df_new], ignore_index=True)
     sqlite_map = df_sqlite.set_index('name')
 
-    # 🌟 修改 4: 这里只 map 更新 post_count 和 category。
-    # 绝不能更新 cn_name，以免破坏旧表中 LLM 已经修正和扩写好的扩展名。
+    # 更新 post_count 和 category
     df_all['post_count'] = df_all['name'].map(sqlite_map['post_count']).fillna(
-        pd.to_numeric(df_all['post_count'], errors='coerce').fillna(0))
-    df_all['category'] = df_all['name'].map(sqlite_map['category']).fillna(
-        pd.to_numeric(df_all['category'], errors='coerce').fillna(-1))
+        pd.to_numeric(df_all['post_count'], errors='coerce').fillna(0)).astype(int)
 
-    # 3. 保存更新后的状态
+    df_all['category'] = df_all['name'].map(sqlite_map['category']).fillna(
+        pd.to_numeric(df_all['category'], errors='coerce').fillna(-1)).astype(int)
+
+    # 保存更新后的状态
     df_all.to_csv(csv_path, index=False, encoding='utf-8')
     click.secho(f"[Sync Tags] 标签库同步完毕，当前总计 {len(df_all)} 条记录。", fg="green")
