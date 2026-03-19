@@ -105,6 +105,103 @@ project_root/
 
 ---
 
+## 数据文件结构
+
+### 输入：`tag.sqlite`
+
+上游数据库，由外部工具维护，本项目只读不写。本项目中此文件的来源是[ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table](https://github.com/ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table?tab=readme-ov-file)。管线依赖其中的 `tags` 表：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | TEXT | 标签英文名（主键，唯一） |
+| `category` | INTEGER | 标签分类：`0` 通用、`3` 版权/作品、`4` 角色（其余类型不纳入处理） |
+| `post_count` | INTEGER | 该标签在 Danbooru 上的帖子数量 |
+| `cn_name` | TEXT | 预置中文名（可为空，LLM 步骤会进一步修正和扩展） |
+
+---
+
+### 中间/输出：`tags_enhanced.csv`
+
+整个管线最核心的数据文件，贯穿全部五个步骤，由 `sync_tags` 创建，由 `llm_processor` 持续丰富。
+
+| 字段 | 来源步骤 | 说明 |
+|------|----------|------|
+| `name` | Step 1 | 标签英文名，全表唯一主键 |
+| `category` | Step 1 | 标签分类（同 SQLite，随每次同步刷新） |
+| `post_count` | Step 1 | 帖子数量（随每次同步刷新） |
+| `cn_name` | Step 1 / Step 3 | 中文名。初始值继承自 SQLite；Step 3 执行后格式为「基础中文名,同义词1,别名2」的逗号拼接串 |
+| `wiki` | Step 3 | LLM 生成的中文视觉描述，约 50 字。初始为空 |
+| `nsfw` | Step 3 | NSFW 标记：`0` 安全、`1` 不安全。初始为 `0` |
+
+**注意**：`cn_name` 字段在 Step 3 后会包含扩展词，格式示例：
+
+```
+original_name  →  蝶祈,罪恶王冠,祈妹
+blue_eyes      →  蓝眼睛,碧眸,蓝瞳
+```
+
+---
+
+### 中间/输出：`wiki_pages.parquet`
+
+由 `fetch_wiki` 构建的本地 Wiki 镜像库，供 `llm_processor` 批量读取英文原文。以 `id` 为主键，字段直接来自 Danbooru API 响应：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER | Wiki 页面 ID（主键） |
+| `title` | TEXT | 页面标题，通常与标签英文名一致 |
+| `body` | TEXT | Wiki 正文（Danbooru 自有标记语法，`llm_processor` 读取时会自动清洗） |
+| `updated_at` | TEXT | 最后更新时间（ISO 8601），用于增量检测的时间基准 |
+| `other_names` | TEXT | 别名列表（原为 JSON 数组，存储时序列化为字符串） |
+
+> `body` 字段在传入 LLM 前会经过 `clean_wiki_text()` 清洗：去除 `[[链接]]` 标记语法、加粗符号、标题前缀，并截断至 400 字。
+
+---
+
+### 中间：`cooccurrence_matrix.csv`
+
+由 `fetch_cooc` 生成的原始共现矩阵，作为 `trim_cooc` 的输入。每行代表一对共现标签：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `tag_a` | TEXT | 共现对中字典序较小的标签名 |
+| `tag_b` | TEXT | 共现对中字典序较大的标签名 |
+| `raw_count` | INTEGER | 估算的绝对共现次数（由 `frequency × post_count` 还原） |
+| `cosine_similarity` | FLOAT | Danbooru API 返回的余弦相似度（仅在字典格式响应中存在，列表格式下为 `0.0`） |
+
+每对 `(tag_a, tag_b)` 保证 `tag_a < tag_b`（字典序），全表无重复配对。
+
+---
+
+### 输出：`cooccurrence_clean.parquet`
+
+管线最终产物，经 PMI 过滤和 Top-K 截断后的高质量稀疏共现图，以 Snappy 压缩存储：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `tag_a` | TEXT | 共现对中字典序较小的标签名 |
+| `tag_b` | TEXT | 共现对中字典序较大的标签名 |
+| `count` | INTEGER | 共现次数（与原始矩阵中的 `raw_count` 含义相同） |
+
+相比原始矩阵，此文件剔除了低 PMI 的弱关联对，并保证每个标签的邻居数不超过 `top_k`。`cosine_similarity` 列在此阶段已丢弃，不出现在最终文件中。
+
+---
+
+### 检查点文件
+
+以下文件均位于 `data/checkpoint/`，由程序自动管理，正常情况下无需手动修改：
+
+| 文件 | 格式 | 内容 |
+|------|------|------|
+| `wiki_progress.txt` | 纯文本 | 第一行：当前抓取页码；第二行（可选）：当前时间轴上限（ISO 8601） |
+| `cooc_progress.txt` | 纯文本 | 单个整数，表示本次任务已完成的标签索引位置 |
+| `cooc_history.json` | JSON 数组 | 历史上所有已成功抓取过共现数据的标签名列表 |
+| `llm_temp.jsonl` | JSON Lines | 每行一条 LLM 返回的标签处理结果，崩溃恢复时读取并合并入主表 |
+| `llm_history.json` | JSON 数组 | 历史上所有已由 LLM 处理完毕的标签名列表（永久豁免） |
+
+
+---
+
 ## 配置文件 config.yaml
 
 所有模块通过统一的 `config.yaml` 管理路径和超参数，无需修改代码即可调整行为。
