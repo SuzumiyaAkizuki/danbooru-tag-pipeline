@@ -8,6 +8,7 @@ paths:
     llm_temp: "data/checkpoint/llm_temp.jsonl"
     wiki_progress: "data/checkpoint/wiki_progress.txt"
     cooc_progress: "data/checkpoint/cooc_progress.txt"
+    cooc_history: "data/checkpoint/cooc_history.json"
 
   processed:
     tags_enhanced: "data/processed/tags_enhanced.csv"
