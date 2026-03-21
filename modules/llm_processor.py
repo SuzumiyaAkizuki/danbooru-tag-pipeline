@@ -226,16 +226,17 @@ def process_batch_smart(client, model_name, batch_data, mode="general"):
 def run(config, preview=False):
     base_dir = Path(__file__).resolve().parent.parent
 
-    API_KEY = os.getenv("OPENROUTER_API_KEY")
+    API_KEY = os.getenv("OPENAI_API_KEY")
+    BASE_URL = os.getenv("OPENAI_BASE_URL")
     BANGUMI_TOKEN = os.getenv("BANGUMI_ACCESS_TOKEN")
     DB_USER = os.getenv("DANBOORU_USER_NAME")
     DB_KEY = os.getenv("DANBOORU_API_KEY")
 
     if not preview and not API_KEY:
-        click.secho("[LLM Processor] 错误：未配置 OPENROUTER_API_KEY", fg="red")
+        click.secho("[LLM Processor] 错误：未配置 OPENAI_API_KEY", fg="red")
         sys.exit(1)
 
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=API_KEY) if not preview else None
+    client = OpenAI(base_url=BASE_URL, api_key=API_KEY) if not preview else None
     model_name = config['settings']['llm']['model_name']
     batch_size = config['settings']['llm']['batch_size']
 

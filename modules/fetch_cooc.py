@@ -6,6 +6,16 @@ import json
 from pathlib import Path
 import click
 
+def read_csv_robust(path: Path) -> pd.DataFrame:
+    """鲁棒地读取 CSV 文件"""
+    if not path.exists():
+        return pd.DataFrame(columns=['name', 'cn_name', 'wiki', 'post_count', 'category', 'nsfw'])
+    for enc in ['utf-8', 'gbk', 'gb18030']:
+        try:
+            return pd.read_csv(path, dtype=str, encoding=enc).fillna("")
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"[Fetch Cooc] 无法读取文件（编码未知或文件损坏）：{path}")
 
 def parse_related_tags(data, tag_a, valid_tags_set, tag_post_counts):
     """智能解析关联标签，提取纯共现次数 (raw_count)"""
@@ -61,7 +71,7 @@ def run(config, full_update=False):
         return
 
     # 1. 读取所有合法标签
-    df_tags = pd.read_csv(input_csv, low_memory=False, encoding='utf-8')
+    df_tags = read_csv_robust(input_csv)
     valid_tags_set = set(df_tags['name'].dropna().unique())
     tag_post_counts = dict(zip(df_tags['name'], pd.to_numeric(df_tags['post_count'], errors='coerce').fillna(0)))
 

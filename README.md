@@ -65,7 +65,7 @@ OPENAI_API_KEY=your_llm_api_key
 OPENAI_BASE_URL=https://openrouter.ai/api/v1  # 或其他兼容端点
 
 # Bangumi API Token（可选，用于实体标签的中文名精准查询）
-BANGUMI_TOKEN=your_bangumi_token
+BANGUMI_ACCESS_TOKEN=your_bangumi_token
 ```
 
 > **注意**：`DANBOORU_USER_NAME` 和 `DANBOORU_API_KEY` 是抓取步骤的硬性要求。LLM 步骤额外需要 `OPENAI_API_KEY`。

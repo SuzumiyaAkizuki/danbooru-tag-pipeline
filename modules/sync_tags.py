@@ -1,6 +1,7 @@
 import pandas as pd
 import sqlite3
 import os
+import requests
 from pathlib import Path
 import click
 
@@ -17,13 +18,44 @@ def read_csv_robust(path: Path) -> pd.DataFrame:
     raise ValueError(f"[Sync Tags] 无法读取文件（编码未知或文件损坏）：{path}")
 
 
+def download_sqlite(save_path="tag.sqlite"):
+    """
+    从 GitHub 下载 tag.sqlite 文件
+
+    Args:
+        save_path: 保存路径，默认为当前目录下的 tag.sqlite
+    """
+    url = "https://github.com/ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table/raw/main/tag.sqlite"
+
+    print(f"[Sync Tags] 正在下载: {url}")
+
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+
+    total_size = int(response.headers.get('content-length', 0))
+    downloaded = 0
+
+    with open(save_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total_size:
+                    percent = downloaded / total_size * 100
+                    print(f"\r[Sync Tags] 下载进度: {percent:.1f}% ({downloaded}/{total_size} bytes)", end="")
+
+    print(f"\n[Sync Tags] 下载完成！文件保存至: {os.path.abspath(save_path)}")
+    return save_path
+
+
 def run(config):
     """执行标签同步逻辑"""
     # 提取配置路径并转为绝对路径
+
     base_dir = Path(__file__).resolve().parent.parent
     sqlite_path = base_dir / config['paths']['raw']['sqlite_db']
     csv_path = base_dir / config['paths']['processed']['tags_enhanced']
-
+    download_sqlite(save_path=sqlite_path)
     click.secho(f"[Sync Tags] 读取目标 CSV: {csv_path}", fg="blue")
     df_old = read_csv_robust(csv_path)
     existing_names = set(df_old['name'].tolist())
