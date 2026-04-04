@@ -13,7 +13,6 @@ from modules import llm_processor as mod_llm_processor
 from modules import fetch_cooc as mod_fetch_cooc
 from modules import trim_cooc as mod_trim_cooc
 
-# 读取配置文件
 def load_config():
     config_path = Path(__file__).resolve().parent / "config.yaml"
     if not config_path.exists():
@@ -23,7 +22,6 @@ def load_config():
         return yaml.safe_load(f)
 
 
-# 确保数据目录存在
 def ensure_directories(config):
     base_dir = Path(__file__).resolve().parent
     for category in ['raw', 'checkpoint', 'processed']:
@@ -58,12 +56,13 @@ def fetch_wiki():
 
 @cli.command()
 @click.option('--preview', is_flag=True, help="开启预览模式，仅查看修改名单，不发请求")
-def llm_process(preview):
+@click.option('--debug', is_flag=True, help="开启调试模式，输出 wiki 清洗、other_names 匹配、LLM 收发的详细过程")
+def llm_process(preview, debug):
     """步骤 3: 调用 LLM 与 Bangumi 翻译、重写、补齐标签"""
     config = load_config()
     ensure_directories(config)
-    click.secho(f">>> 开始 LLM 处理流程 (预览模式: {preview})...", fg="cyan")
-    mod_llm_processor.run(config, preview=preview)
+    click.secho(f">>> 开始 LLM 处理流程 (预览模式: {preview}, 调试模式: {debug})...", fg="cyan")
+    mod_llm_processor.run(config, preview=preview, debug=debug)
 
 
 @cli.command()
@@ -72,10 +71,8 @@ def fetch_cooc(full):
     """步骤 4: 抓取标签共现关系矩阵"""
     config = load_config()
     ensure_directories(config)
-
     mode_text = "全量模式" if full else "增量模式"
     click.secho(f">>> 开始抓取共现矩阵 ({mode_text})...", fg="cyan", bold=True)
-
     mod_fetch_cooc.run(config, full_update=full)
 
 
@@ -97,15 +94,12 @@ def pipeline():
     config = load_config()
     ensure_directories(config)
     click.secho("[Main] 启动一键全自动工作流 Pipeline...", fg="magenta", bold=True)
-
-    # 利用 Click 的 Context 机制依次调用其他命令
     ctx = click.get_current_context()
     ctx.invoke(sync_tags)
     ctx.invoke(fetch_wiki)
-    ctx.invoke(llm_process, preview=False)
+    ctx.invoke(llm_process, preview=False, debug=False)
     ctx.invoke(fetch_cooc)
     ctx.invoke(trim_cooc)
-
     click.secho("\n[Main] 所有 Pipeline 任务执行完毕！", fg="magenta", bold=True)
 
 
