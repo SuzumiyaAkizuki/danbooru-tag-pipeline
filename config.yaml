@@ -14,6 +14,8 @@ paths:
     tags_enhanced: "data/processed/tags_enhanced.csv"
     wiki_parquet: "data/processed/wiki_pages.parquet"
     cooc_clean: "data/processed/cooccurrence_clean.parquet"
+    tag_groups: "data/processed/tag_groups.json"
+
 
 
 settings:

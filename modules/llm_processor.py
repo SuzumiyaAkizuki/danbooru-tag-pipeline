@@ -89,7 +89,7 @@ def clean_wiki_text(text: str) -> str:
     text = text.replace('\n', ' ').replace('\r', '')
     text = re.sub(r' {2,}', ' ', text)
 
-    result = text[:400].strip()
+    result = text[:8000].strip()
     dbg("clean_wiki_text 清洗结果",
         f"原始长度: {len(text)} 字符\n清洗后 ({len(result)} 字符):\n{result}")
     return result
@@ -359,7 +359,7 @@ def process_batch_smart(client, model_name, batch_data, mode="general", debug: b
         请完成以下四个动作：
 
         1. **生成中文描述 (chinese_wiki)**:
-           - 提取 `wiki_data` 里的核心信息进行翻译或总结，生成一句简练的中文视觉描述（50字左右）。
+           - 将 `wiki_data` 里的核心信息完整翻译为中文。
            - 如果 `wiki_data` 为空，请根据知识库写一句该标签的中文视觉描述。
            - 如果知识库中没有相关信息且 `wiki_data` 也无效，返回空字符串。
            - 不要在输出里包含任何字数统计或备注信息，只输出描述本身。
@@ -428,7 +428,7 @@ def process_batch_smart(client, model_name, batch_data, mode="general", debug: b
         请完成以下四个动作：
 
         1. **生成中文描述 (chinese_wiki)**:
-           - 优先提炼 `ref_wiki` 为 50 字左右的中文简述。若 `ref_wiki` 为空，请根据你的知识库写 50 字简介。
+           - 将 `ref_wiki` 完整翻译为中文简述。若 `ref_wiki` 为空，请根据你的知识库写约 50 字简介。
            - 不得在输出的中文描述里包含类似于"(50字)"的字数统计，或任何备注信息，只允许输出描述本身。
 
         2. **确定中文名 (cn_name)**:

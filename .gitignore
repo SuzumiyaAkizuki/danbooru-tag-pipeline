@@ -1,6 +1,10 @@
 .env
 temp.py
+reset.py
+parquet2csv.py
+*.zip
 __pycache__/
 *.pyc
 .idea/
 data/
+find_cn_duplicates.py

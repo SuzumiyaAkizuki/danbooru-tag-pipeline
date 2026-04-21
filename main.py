@@ -12,6 +12,7 @@ from modules import fetch_wiki as mod_fetch_wiki
 from modules import llm_processor as mod_llm_processor
 from modules import fetch_cooc as mod_fetch_cooc
 from modules import trim_cooc as mod_trim_cooc
+from modules import fetch_tag_groups as mod_fetch_tag_groups
 
 def load_config():
     config_path = Path(__file__).resolve().parent / "config.yaml"
@@ -44,6 +45,14 @@ def sync_tags():
     mod_sync_tags.run(config)
     click.secho("[Main] 同步完成！", fg="green")
 
+@cli.command()
+def fetch_tag_groups():
+    """步骤 1.5: 获取标签组信息"""
+    config = load_config()
+    ensure_directories(config)
+    click.secho(">>> 开始抓取标签组信息...", fg="cyan")
+    mod_fetch_tag_groups.run(config)
+    click.secho("[Main] 标签组信息抓取完成！", fg="green")
 
 @cli.command()
 def fetch_wiki():
