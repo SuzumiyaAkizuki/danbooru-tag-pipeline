@@ -20,7 +20,7 @@ paths:
 
 settings:
   llm:
-    model_name: "x-ai/grok-4.1-fast"
+    model_name: "deepseek/deepseek-v4-flash"
     batch_size: 10
 
   cooc_trim:
