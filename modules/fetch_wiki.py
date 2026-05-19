@@ -75,6 +75,7 @@ def run(config):
     parquet_path = base_dir / config['paths']['processed']['wiki_parquet']
     progress_file = base_dir / config['paths']['checkpoint']['wiki_progress']
     temp_csv_file = progress_file.with_name("wiki_temp.csv")
+    wiki_updated_tags_path = base_dir / config["paths"]["checkpoint"]["wiki_updated_tags"]
 
     last_update_time, df_local = get_local_latest_time(parquet_path)
 
@@ -205,6 +206,18 @@ def run(config):
             f"[Fetch Wiki] Wiki 数据合并成功！保存为 {parquet_path.name} (总行数: {len(df_final)})",
             fg="green"
         )
+
+        # 保存本次更新的 wiki 标签名，供 llm_processor 重新处理
+        if "title" in df_new_all.columns:
+            updated_titles = df_new_all["title"].dropna().unique().tolist()
+            if updated_titles:
+                import json as _json
+                with open(wiki_updated_tags_path, "w", encoding="utf-8") as f:
+                    _json.dump(updated_titles, f, ensure_ascii=False)
+                click.secho(
+                    f"[Fetch Wiki] 已记录 {len(updated_titles)} 个更新标签供 LLM 重新处理。",
+                    fg="blue"
+                )
 
         os.remove(temp_csv_file)
         if progress_file.exists():

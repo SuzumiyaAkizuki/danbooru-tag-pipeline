@@ -105,9 +105,23 @@ def run(config):
 
         time.sleep(1.5)
 
+    # 保留已有的中文翻译，新 group 留空待人工补充
+    existing_cn_names: dict[str, str] = {}
+    if out_path.exists():
+        try:
+            with open(out_path, 'r', encoding='utf-8') as f:
+                existing_cn_names = json.load(f).get('group_cn_names', {})
+        except Exception:
+            pass
+
+    group_cn_names: dict[str, str] = {}
+    for group_id in group_to_tags:
+        group_cn_names[group_id] = existing_cn_names.get(group_id, "")
+
     result = {
-        'tag_to_groups': tag_to_groups,
-        'group_to_tags': group_to_tags,
+        'tag_to_groups':  tag_to_groups,
+        'group_to_tags':  group_to_tags,
+        'group_cn_names': group_cn_names,
     }
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,6 +129,7 @@ def run(config):
         json.dump(result, f, ensure_ascii=False, indent=2)
 
     click.secho(
-        f"[Tag Groups] 完成：{len(group_to_tags)} 个 group，覆盖 {len(tag_to_groups)} 个标签",
+        f"[Tag Groups] 完成：{len(group_to_tags)} 个 group，覆盖 {len(tag_to_groups)} 个标签, "
+        f"{sum(1 for v in group_cn_names.values() if v)} 个已有中文名",
         fg="green"
     )

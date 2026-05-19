@@ -10,6 +10,7 @@ from pathlib import Path
 
 import click
 import pandas as pd
+import json_repair
 from openai import OpenAI
 
 
@@ -154,6 +155,22 @@ def _load_wiki_cache(wiki_path: Path) -> tuple[dict, dict]:
     return real_wiki_map, other_names_map
 
 
+def _load_wiki_updated_names(config: dict, base_dir: Path) -> set:
+    """加载 fetch_wiki 产生的 wiki 更新标签列表，用于强制重新处理。"""
+    path = base_dir / config["paths"]["checkpoint"]["wiki_updated_tags"]
+    if not path.exists():
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            names = json.load(f)
+        if isinstance(names, list):
+            click.secho(f"[LLM Processor] 检测到 {len(names)} 个 Wiki 更新标签，将强制重新处理。", fg="yellow")
+            return set(names)
+    except Exception as e:
+        click.secho(f"[LLM Processor] 警告：无法读取 wiki_updated_tags: {e}", fg="yellow")
+    return set()
+
+
 # ---------------------------------------------------------------------------
 # Text utilities
 # ---------------------------------------------------------------------------
@@ -278,6 +295,8 @@ def _resolve_qualifier(tag_name: str, exact_index: dict, works_list: list) -> tu
     if not m:
         return None, [], ""
     qualifier = m.group(1)
+    if qualifier.lower() == "series":
+        return None, [], qualifier
     exact_cn, candidates = _get_work_candidates(qualifier, exact_index, works_list)
     return exact_cn, candidates, qualifier
 
@@ -474,12 +493,9 @@ def fetch_entity_info(tag_name: str, category: int, token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _TAG_GROUPS_RULE = """
-        - `tag_groups`：该标签所属的 Danbooru 分类组列表（英文，可能为空）。
-          若非空，**必须**将每个分类组名称翻译为准确的中文，并全部纳入扩展词。
-          翻译规则：保留语义，不要直译生硬词——例如 hair_color→发色、hair_styles→发型、
-          attire→服装、accessories→配饰、body_parts→身体部位、expressions→表情、
-          actions→动作姿势、settings→场景背景、以此类推。
-          这些分类词是搜索锚点，用户会通过它们检索到本标签，务必准确。
+        - `tag_groups`：该标签所属的 Danbooru 分类组列表（已翻译为中文，可能为空）。
+          若非空，这些分类词即为搜索锚点，**必须**全部纳入扩展中文名。
+          用户会通过这些分类词检索到本标签，务必完整保留，不可遗漏。
           若 `tag_groups` 为空，则根据标签语义自由生成上位概念或同义词。"""
 
 _WORK_CANDIDATES_RULE = """
@@ -595,6 +611,195 @@ _PROMPTS: dict[str, tuple[str, float]] = {
     "entity":   (_SYSTEM_PROMPT_ENTITY,   0.1),
 }
 
+# ---------------------------------------------------------------------------
+# Group CN name translation (filling empty group_cn_names)
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT_GROUP_TRANSLATION = """
+# Role
+你是一个 Danbooru 标签数据库的本地化专家。
+
+# Task
+用户会提供一批 Danbooru 标签分类组的英文ID和该组的部分示例标签。
+请为每个分类组生成一个简洁准确的中文分类名。
+
+# Rules
+- 中文名应为 2~8 个汉字，概括该组标签的共同主题。
+- 参考示例标签的内容来理解组的语义范围。
+- 如果是 NSFW/R18 相关的组，中文名应直白准确，不需要避讳或美化。
+- 如果是方言、历史、meme 等文化类组，使用二次元圈内常用的称谓。
+
+# Examples
+| 组ID | 示例标签 | 理想中文名 |
+|------|---------|-----------|
+| character_count | solo, 1girl, crowd, no_humans | 角色人数 |
+| japanese_dialects | kansaiben, tohokuben | 日语方言 |
+| skin_folds | epicanthic_folds, interdigital_folds | 皮肤褶皱 |
+| covering | covering_face, covering_breasts, covering_crotch | 遮挡 |
+| bdsm_and_torture | bdsm, torture, slave, humiliation | BDSM/折磨 |
+| holding_tags | holding_shoes, holding_swimsuit, holding_sword | 手持物品 |
+| history | sengoku_jidai, french_revolution, roman_empire | 历史 |
+| meme | meme | 网络迷因 |
+
+必须以合法 JSON 格式输出，结构如下，不要输出任何其他内容：
+{"items": [{"group": "组ID", "cn_name": "中文名"}]}
+"""
+
+_GROUP_TRANSLATION_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "group_translation_result",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "group":   {"type": "string"},
+                            "cn_name": {"type": "string"},
+                        },
+                        "required": ["group", "cn_name"],
+                    },
+                }
+            },
+            "required": ["items"],
+        },
+        "strict": False,
+    },
+}
+
+_MAX_SAMPLE_TAGS = 20  # 每组最多提供多少个示例标签给 LLM
+
+
+def _build_group_translation_payload(empty_groups: dict[str, str],
+                                     group_to_tags: dict[str, list],
+                                     sample_limit: int = _MAX_SAMPLE_TAGS) -> list:
+    """构建组名翻译请求的 payload 列表。"""
+    payload = []
+    for group_id, short_name in empty_groups.items():
+        tags = group_to_tags.get(group_id, [])
+        sample = tags[:sample_limit]
+        payload.append({
+            "group": short_name,
+            "sample_tags": sample,
+            "total_tags": len(tags),
+        })
+    return payload
+
+
+def _call_llm_group_translation(client, model_name: str,
+                                 batch_data: list) -> list:
+    """调用 LLM 翻译组名，返回 items 列表。"""
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT_GROUP_TRANSLATION},
+                    {"role": "user", "content": json.dumps(batch_data, ensure_ascii=False)},
+                ],
+                temperature=0.3,
+                response_format=_GROUP_TRANSLATION_JSON_SCHEMA,
+                extra_body={"reasoning": {"enabled": False}},
+            )
+            raw_content = response.choices[0].message.content
+            if _DEBUG:
+                dbg("组名翻译 LLM 响应", raw_content, color="green")
+            parsed = json_repair.loads(raw_content)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"json_repair 返回了非 dict 类型: {type(parsed).__name__}")
+            return parsed.get("items", [])
+        except Exception as e:
+            if attempt == max_attempts - 1:
+                click.secho(
+                    f"[LLM Processor] 组名翻译 LLM 请求失败，已重试 {max_attempts} 次: {e}",
+                    fg="red",
+                )
+                return []
+            wait = min(2 ** attempt + random.uniform(0, 1), 60)
+            click.secho(
+                f"[LLM Processor] 组名翻译 LLM 请求出错 (尝试 {attempt + 1}/{max_attempts})，"
+                f"{wait:.1f}s 后重试: {e}",
+                fg="yellow",
+            )
+            time.sleep(wait)
+    return []
+
+
+def _fill_group_cn_names(group_cn_names_map: dict[str, str],
+                          group_to_tags: dict[str, list],
+                          tag_groups_path: Path,
+                          tg_data: dict,
+                          client, model_name: str,
+                          preview: bool = False) -> int:
+    """
+    检查 group_cn_names 中值为空的条目，调用 LLM 翻译后回填到 tag_groups.json。
+
+    返回填充了多少个条目（preview 模式下返回待填充数量）。
+    """
+    # 找出所有值为空的 group_cn_names
+    empty = {gid: gid.replace("tag_group:", "")
+             for gid, cn in group_cn_names_map.items()
+             if not cn.strip()}
+
+    if not empty:
+        click.secho("[LLM Processor] 所有 tag_groups 的中文名均已就绪，无需翻译。", fg="green")
+        return 0
+
+    click.secho(
+        f"\n[LLM Processor] 检测到 {len(empty)} 个 tag_group 中文名缺失，"
+        f"准备调用 LLM 翻译...",
+        fg="cyan",
+    )
+    for gid, short in empty.items():
+        sample = group_to_tags.get(gid, [])[:_MAX_SAMPLE_TAGS]
+        click.echo(f"  - {short} ({len(group_to_tags.get(gid, []))} 个标签): {', '.join(sample[:5])}...")
+
+    if preview:
+        click.secho(f"[LLM Processor] [预览] 共 {len(empty)} 个组名待翻译，跳过实际调用。", fg="magenta")
+        return len(empty)
+
+    # 构建 payload 并调用 LLM
+    payload = _build_group_translation_payload(empty, group_to_tags)
+    results = _call_llm_group_translation(client, model_name, payload)
+
+    if not results:
+        click.secho("[LLM Processor] 警告：组名翻译 LLM 返回为空，跳过回填。", fg="yellow")
+        return 0
+
+    # 将结果回填到 group_cn_names_map（同时更新内存和文件）
+    filled = 0
+    for item in results:
+        group_short = item.get("group", "").strip()
+        cn_name = item.get("cn_name", "").strip()
+        if not group_short or not cn_name:
+            continue
+        group_id = f"tag_group:{group_short}"
+        if group_id in group_cn_names_map and not group_cn_names_map[group_id].strip():
+            group_cn_names_map[group_id] = cn_name
+            click.echo(f"  [GroupCN] {group_id} → {cn_name}")
+            filled += 1
+
+    # 回写到 tag_groups.json
+    tg_data["group_cn_names"] = group_cn_names_map
+    with open(tag_groups_path, "w", encoding="utf-8") as f:
+        json.dump(tg_data, f, ensure_ascii=False, indent=2)
+
+    click.secho(
+        f"[LLM Processor] 组名翻译完成：成功填充 {filled}/{len(empty)} 个，"
+        f"已保存到 tag_groups.json。",
+        fg="green",
+    )
+    return filled
+
+
+# ---------------------------------------------------------------------------
+# 现有 JSON_SCHEMA（标签翻译用）
+# ---------------------------------------------------------------------------
+
 _JSON_SCHEMA = {
     "type": "json_schema",
     "json_schema": {
@@ -643,7 +848,12 @@ def _llm_request(client, model_name: str, system_prompt: str,
             raw_content = response.choices[0].message.content
             if _DEBUG:
                 dbg("LLM 响应", raw_content, color="green")
-            return json.loads(raw_content).get("items", [])
+            parsed = json_repair.loads(raw_content)
+            if _DEBUG and raw_content.strip() != json.dumps(parsed, ensure_ascii=False):
+                dbg("LLM 响应 (json_repair 修复后)", parsed, color="yellow")
+            if not isinstance(parsed, dict):
+                raise ValueError(f"json_repair 返回了非 dict 类型: {type(parsed).__name__}")
+            return parsed.get("items", [])
         except Exception as e:
             if attempt == max_attempts - 1:
                 click.secho(f"[LLM Processor] LLM 请求失败，已重试 {max_attempts} 次，放弃本批次: {e}", fg="red")
@@ -703,8 +913,19 @@ def _apply_results(df: pd.DataFrame, results: list, temp_path: Path,
 # Payload builders
 # ---------------------------------------------------------------------------
 
+def _resolve_group_names(tag_name: str, tag_to_groups_map: dict,
+                         group_cn_names_map: dict[str, str]) -> list[str]:
+    """将 tag 的 group ID 列表转为中文名称列表，无翻译的回退到英文短名。"""
+    result = []
+    for g in tag_to_groups_map.get(tag_name, []):
+        cn = group_cn_names_map.get(g, "")
+        result.append(cn if cn else g.replace("tag_group:", ""))
+    return result
+
+
 def _build_entity_payload(row: pd.Series, other_names_map: dict, real_wiki_map: dict,
-                           tag_to_groups_map: dict, exact_index: dict, works_list: list,
+                           tag_to_groups_map: dict, group_cn_names_map: dict[str, str],
+                           exact_index: dict, works_list: list,
                            bangumi_token: str) -> dict:
     tag_name = row["name"]
     category = int(row["category"]) if str(row["category"]).lstrip("-").isdigit() else -1
@@ -735,7 +956,7 @@ def _build_entity_payload(row: pd.Series, other_names_map: dict, real_wiki_map: 
     exact_cn, candidates, qualifier = _resolve_qualifier(tag_name, exact_index, works_list)
     _log_work_match(tag_name, exact_cn, candidates, qualifier, "entity")
 
-    tag_groups = [g.replace("tag_group:", "") for g in tag_to_groups_map.get(tag_name, [])]
+    tag_groups = _resolve_group_names(tag_name, tag_to_groups_map, group_cn_names_map)
     if tag_groups:
         click.echo(f"  [TagGroups/entity] {tag_name} → {', '.join(tag_groups)}")
 
@@ -751,7 +972,8 @@ def _build_entity_payload(row: pd.Series, other_names_map: dict, real_wiki_map: 
 
 
 def _build_general_payload(row: pd.Series, other_names_map: dict, real_wiki_map: dict,
-                            tag_to_groups_map: dict, exact_index: dict, works_list: list) -> dict:
+                            tag_to_groups_map: dict, group_cn_names_map: dict[str, str],
+                            exact_index: dict, works_list: list) -> dict:
     tag_name = row["name"]
     other_names_list = other_names_map.get(tag_name, [])
     clean_wiki = clean_wiki_text(real_wiki_map.get(tag_name, ""))
@@ -768,7 +990,7 @@ def _build_general_payload(row: pd.Series, other_names_map: dict, real_wiki_map:
     exact_cn, candidates, qualifier = _resolve_qualifier(tag_name, exact_index, works_list)
     _log_work_match(tag_name, exact_cn, candidates, qualifier, mode_label)
 
-    tag_groups = [g.replace("tag_group:", "") for g in tag_to_groups_map.get(tag_name, [])]
+    tag_groups = _resolve_group_names(tag_name, tag_to_groups_map, group_cn_names_map)
     if tag_groups:
         click.echo(f"  [TagGroups/{mode_label}] {tag_name} → {', '.join(tag_groups)}")
 
@@ -811,16 +1033,32 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
     wiki_path = base_dir / config["paths"]["processed"]["wiki_parquet"]
     real_wiki_map, other_names_map = _load_wiki_cache(wiki_path)
 
+    wiki_updated_names = _load_wiki_updated_names(config, base_dir)
+
     tag_to_groups_map: dict = {}
+    group_cn_names_map: dict[str, str] = {}
     tag_groups_path = base_dir / config["paths"]["processed"].get("tag_groups", "")
     if tag_groups_path and tag_groups_path.exists():
         try:
             with open(tag_groups_path, "r", encoding="utf-8") as f:
-                tag_to_groups_map = json.load(f).get("tag_to_groups", {})
+                tg_data = json.load(f)
+                tag_to_groups_map = tg_data.get("tag_to_groups", {})
+                group_cn_names_map = tg_data.get("group_cn_names", {})
+            cn_count = sum(1 for v in group_cn_names_map.values() if v)
             click.secho(
-                f"[LLM Processor] Tag Groups 已加载：覆盖 {len(tag_to_groups_map)} 个标签的分类归属。", fg="blue")
+                f"[LLM Processor] Tag Groups 已加载：覆盖 {len(tag_to_groups_map)} 个标签, "
+                f"{cn_count}/{len(group_cn_names_map)} 个组有中文名。", fg="blue")
         except Exception as e:
             click.secho(f"[LLM Processor] 警告：无法读取 tag_groups.json: {e}", fg="yellow")
+
+    # Step 0: 补全 group_cn_names 中缺失的中文翻译
+    if tag_to_groups_map and group_cn_names_map:
+        group_to_tags_map = tg_data.get("group_to_tags", {})
+        _fill_group_cn_names(
+            group_cn_names_map, group_to_tags_map,
+            tag_groups_path, tg_data,
+            client, model_name, preview,
+        )
 
     work_exact_index, work_list = _build_work_cn_index(df)
 
@@ -828,13 +1066,17 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
     indices_general: list = []
     for idx, row in df.iterrows():
         name = row["name"]
-        if name in history_names or name in temp_records:
-            continue
+        wiki_updated = name in wiki_updated_names
+        # Wiki 更新的标签跳过历史检查，强制重新处理
+        if not wiki_updated:
+            if name in history_names or name in temp_records:
+                continue
         already_done = len(str(row["wiki"]).strip()) >= 2
+        # Wiki 更新的标签即使已有内容也要重新处理
         if row["category"] in ("3", "4", 3, 4):
-            if not already_done:
+            if not already_done or wiki_updated:
                 indices_entity.append(idx)
-        elif not already_done:
+        elif not already_done or wiki_updated:
             indices_general.append(idx)
 
     if preview:
@@ -854,7 +1096,8 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
             payload = [
                 _build_entity_payload(
                     df.iloc[idx], other_names_map, real_wiki_map,
-                    tag_to_groups_map, work_exact_index, work_list, BANGUMI_TOKEN,
+                    tag_to_groups_map, group_cn_names_map,
+                    work_exact_index, work_list, BANGUMI_TOKEN,
                 )
                 for idx in batch_idx
             ]
@@ -888,7 +1131,8 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
             row = df.iloc[idx]
             entry = _build_general_payload(
                 row, other_names_map, real_wiki_map,
-                tag_to_groups_map, work_exact_index, work_list,
+                tag_to_groups_map, group_cn_names_map,
+                work_exact_index, work_list,
             )
             entry["_idx"] = idx
             if "wiki_data" in entry:
@@ -916,3 +1160,9 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
                     history_names, current_run_processed, temp_records)
     else:
         click.secho("\n  [LLM Processor] 本次运行没有需要更新的数据。", fg="green")
+
+    # 清理 wiki_updated_tags 检查点（已处理完毕）
+    wiki_updated_tags_path = base_dir / config["paths"]["checkpoint"]["wiki_updated_tags"]
+    if wiki_updated_tags_path.exists():
+        os.remove(wiki_updated_tags_path)
+        click.secho("[LLM Processor] Wiki 更新标签检查点已清理。", fg="green")
