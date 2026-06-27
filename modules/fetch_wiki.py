@@ -7,6 +7,7 @@ import random
 from dateutil import parser
 from pathlib import Path
 import click
+from modules.trash import trash_file
 
 
 # ---------------------------------------------------------------------------
@@ -207,21 +208,27 @@ def run(config):
             fg="green"
         )
 
-        # 保存本次更新的 wiki 标签名，供 llm_processor 重新处理
+        # 保存本次更新的 wiki 标签名（与已有检查点合并，累积到 LLM 重处理时消费）
         if "title" in df_new_all.columns:
-            updated_titles = df_new_all["title"].dropna().unique().tolist()
+            updated_titles = set(df_new_all["title"].dropna().unique())
+            if wiki_updated_tags_path.exists():
+                try:
+                    with open(wiki_updated_tags_path, "r", encoding="utf-8") as f:
+                        existing = set(json.load(f))
+                    updated_titles |= existing
+                except Exception:
+                    pass
             if updated_titles:
-                import json as _json
                 with open(wiki_updated_tags_path, "w", encoding="utf-8") as f:
-                    _json.dump(updated_titles, f, ensure_ascii=False)
+                    json.dump(sorted(updated_titles), f, ensure_ascii=False)
                 click.secho(
-                    f"[Fetch Wiki] 已记录 {len(updated_titles)} 个更新标签供 LLM 重新处理。",
+                    f"[Fetch Wiki] 已累积 {len(updated_titles)} 个 Wiki 更新标签，供 LLM 重处理。",
                     fg="blue"
                 )
 
-        os.remove(temp_csv_file)
+        trash_file(base_dir, temp_csv_file)
         if progress_file.exists():
-            os.remove(progress_file)
+            trash_file(base_dir, progress_file)
         click.secho("[Fetch Wiki] 断点记录已清理。", fg="green")
     else:
         click.secho("[Fetch Wiki] 本地数据已经是最新版，没有新数据产生。", fg="green")

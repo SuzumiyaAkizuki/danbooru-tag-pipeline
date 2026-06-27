@@ -12,6 +12,7 @@ import click
 import pandas as pd
 import json_repair
 from openai import OpenAI
+from modules.trash import trash_file
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,8 @@ def _load_state(config: dict, base_dir: Path) -> tuple:
 
 
 def _save_state(df: pd.DataFrame, csv_path: Path, history_path: Path, temp_path: Path,
-                history_names: set, current_run_processed: set, temp_records: dict) -> None:
+                history_names: set, current_run_processed: set, temp_records: dict,
+                base_dir: Path) -> None:
     df.to_csv(csv_path, index=False, encoding="utf-8")
     click.secho(f"[LLM Processor] 主结果文件已覆写 (总计 {len(df)} 条)。", fg="green")
 
@@ -97,7 +99,7 @@ def _save_state(df: pd.DataFrame, csv_path: Path, history_path: Path, temp_path:
     click.secho(f"[LLM Processor] 长期历史记录已更新 (共豁免 {len(history_names)} 词条)。", fg="green")
 
     if temp_path.exists():
-        os.remove(temp_path)
+        trash_file(base_dir, temp_path)
         click.secho("[LLM Processor] 临时过程文件已清理。", fg="green")
 
 
@@ -1011,7 +1013,7 @@ def _build_general_payload(row: pd.Series, other_names_map: dict, real_wiki_map:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def run(config: dict, preview: bool = False, debug: bool = False) -> None:
+def run(config: dict, preview: bool = False, debug: bool = False, reprocess_wiki_updates: bool = False) -> None:
     global _DEBUG
     _DEBUG = debug
 
@@ -1034,6 +1036,12 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
     real_wiki_map, other_names_map = _load_wiki_cache(wiki_path)
 
     wiki_updated_names = _load_wiki_updated_names(config, base_dir)
+    if not reprocess_wiki_updates:
+        if wiki_updated_names:
+            click.secho(
+                f"[LLM Processor] Wiki 更新标签检查点存在 ({len(wiki_updated_names)} 条)，"
+                f"但未开启 --reprocess-wiki-updates，将忽略。", fg="blue")
+        wiki_updated_names = set()
 
     tag_to_groups_map: dict = {}
     group_cn_names_map: dict[str, str] = {}
@@ -1066,13 +1074,13 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
     indices_general: list = []
     for idx, row in df.iterrows():
         name = row["name"]
-        wiki_updated = name in wiki_updated_names
-        # Wiki 更新的标签跳过历史检查，强制重新处理
+        wiki_updated = reprocess_wiki_updates and name in wiki_updated_names
+        # 仅当开启 --reprocess-wiki-updates 时，Wiki 更新的标签才跳过历史检查
         if not wiki_updated:
             if name in history_names or name in temp_records:
                 continue
         already_done = len(str(row["wiki"]).strip()) >= 2
-        # Wiki 更新的标签即使已有内容也要重新处理
+        # Wiki 更新的标签即使已有内容也要重新处理（仅在开启 reprocess 模式时）
         if row["category"] in ("3", "4", 3, 4):
             if not already_done or wiki_updated:
                 indices_entity.append(idx)
@@ -1157,12 +1165,13 @@ def run(config: dict, preview: bool = False, debug: bool = False) -> None:
         if patch_count:
             click.secho(f"[LLM Processor] 作品限定词补全：修改 {patch_count} 条角色标签。", fg="blue")
         _save_state(df, csv_path, history_path, temp_path,
-                    history_names, current_run_processed, temp_records)
+                    history_names, current_run_processed, temp_records, base_dir)
     else:
         click.secho("\n  [LLM Processor] 本次运行没有需要更新的数据。", fg="green")
 
-    # 清理 wiki_updated_tags 检查点（已处理完毕）
-    wiki_updated_tags_path = base_dir / config["paths"]["checkpoint"]["wiki_updated_tags"]
-    if wiki_updated_tags_path.exists():
-        os.remove(wiki_updated_tags_path)
-        click.secho("[LLM Processor] Wiki 更新标签检查点已清理。", fg="green")
+    # 仅在消费了 wiki_updated_tags 后才清理检查点
+    if reprocess_wiki_updates:
+        wiki_updated_tags_path = base_dir / config["paths"]["checkpoint"]["wiki_updated_tags"]
+        if wiki_updated_tags_path.exists():
+            trash_file(base_dir, wiki_updated_tags_path)
+            click.secho("[LLM Processor] Wiki 更新标签检查点已清理。", fg="green")

@@ -9,12 +9,15 @@ paths:
     wiki_progress: "data/checkpoint/wiki_progress.txt"
     cooc_progress: "data/checkpoint/cooc_progress.txt"
     cooc_history: "data/checkpoint/cooc_history.json"
+    artist_cooc_progress: "data/checkpoint/artist_cooc_progress.txt"
+    artist_cooc_history: "data/checkpoint/artist_cooc_history.json"
     wiki_updated_tags: "data/checkpoint/wiki_updated_tags.json"
 
   processed:
     tags_enhanced: "data/processed/tags_enhanced.csv"
     wiki_parquet: "data/processed/wiki_pages.parquet"
     cooc_clean: "data/processed/cooccurrence_clean.parquet"
+    tag_artist_cooc: "data/processed/tag_artist_cooc.parquet"
     tag_groups: "data/processed/tag_groups.json"
 
 
@@ -27,3 +30,7 @@ settings:
   cooc_trim:
     top_k: 50
     min_pmi: 1.0
+
+  artist_cooc_trim:
+    top_k: 50
+    min_npmi: 0.1
